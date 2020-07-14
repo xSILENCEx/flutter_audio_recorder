@@ -5,10 +5,17 @@ import 'package:file/local.dart';
 import 'package:flutter/services.dart';
 import 'package:path/path.dart' as p;
 
+enum InterruptionType { began, endedWithResume, endedWithNoResume }
+
 /// Audio Recorder Plugin
 class FlutterAudioRecorder {
   static const MethodChannel _channel =
-      const MethodChannel('flutter_audio_recorder');
+      const MethodChannel('flutter_audio_recorder/methods');
+
+  static const EventChannel _eventChannel =
+      const EventChannel('flutter_audio_recorder/events');
+  StreamSubscription _eventChannelSubscription;
+
   static const String DEFAULT_EXTENSION = '.m4a';
   static LocalFileSystem fs = LocalFileSystem();
 
@@ -21,9 +28,37 @@ class FlutterAudioRecorder {
   Future get initialized => _initRecorder;
   Recording get recording => _recording;
 
+  var _interruptionStreamController = StreamController<InterruptionType>();
+  Stream<InterruptionType> get interruptionStream =>
+      _interruptionStreamController?.stream;
+
   FlutterAudioRecorder(String path,
       {AudioFormat audioFormat, int sampleRate = 16000}) {
     _initRecorder = _init(path, audioFormat, sampleRate);
+
+    _eventChannelSubscription =
+        _eventChannel.receiveBroadcastStream().listen((data) {
+      switch (data['type'] as String) {
+        case 'interruptionBegan':
+          _interruptionStreamController?.add(InterruptionType.began);
+          break;
+        case 'interruptionEndedWithResume':
+          _interruptionStreamController?.add(InterruptionType.endedWithResume);
+          break;
+        case 'interruptionEndedWithoutResume':
+          _interruptionStreamController?.add(InterruptionType.endedWithNoResume);
+          break;
+        default:
+          return null;
+      }
+    });
+  }
+
+  void dispose() {
+    _interruptionStreamController?.close();
+    _interruptionStreamController = null;
+    _eventChannelSubscription?.cancel();
+    _eventChannelSubscription = null;
   }
 
   /// Initialized recorder instance

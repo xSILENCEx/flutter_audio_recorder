@@ -14,10 +14,20 @@ public class SwiftFlutterAudioRecorderPlugin: NSObject, FlutterPlugin, AVAudioRe
     var settings: [String:Int]!
     var audioRecorder: AVAudioRecorder!
     
+    let audioStreamHandler: AudioStreamHandler!
+    var eventChannel: FlutterEventChannel!
+    
+    public override init() {
+      self.audioStreamHandler = AudioStreamHandler()
+    }
+    
     public static func register(with registrar: FlutterPluginRegistrar) {
-        let channel = FlutterMethodChannel(name: "flutter_audio_recorder", binaryMessenger: registrar.messenger())
         let instance = SwiftFlutterAudioRecorderPlugin()
-        registrar.addMethodCallDelegate(instance, channel: channel)
+        let methodChannel = FlutterMethodChannel(name: "flutter_audio_recorder/methods", binaryMessenger: registrar.messenger())
+        registrar.addMethodCallDelegate(instance, channel: methodChannel)
+
+        instance.eventChannel = FlutterEventChannel(name: "flutter_audio_recorder/events", binaryMessenger: registrar.messenger())
+        instance.eventChannel.setStreamHandler(instance.audioStreamHandler)
     }
     
     public func handle(_ call: FlutterMethodCall, result: @escaping FlutterResult) {
@@ -87,6 +97,11 @@ public class SwiftFlutterAudioRecorderPlugin: NSObject, FlutterPlugin, AVAudioRe
                 recordingResult["isMeteringEnabled"] = audioRecorder.isMeteringEnabled
                 recordingResult["status"] = status
                 
+                NotificationCenter.default.addObserver(self,
+                selector: #selector(handleInterruption),
+                name: .AVAudioSessionInterruption,
+                object: nil)
+                
                 result(recordingResult)
             } catch {
                 print("fail")
@@ -104,7 +119,7 @@ public class SwiftFlutterAudioRecorderPlugin: NSObject, FlutterPlugin, AVAudioRe
             
         case "stop":
             print("stop")
-            
+            // Remove observer
             if audioRecorder == nil || status == "unset" {
                 result(nil)
             } else {
@@ -123,6 +138,10 @@ public class SwiftFlutterAudioRecorderPlugin: NSObject, FlutterPlugin, AVAudioRe
 
                 audioRecorder.stop()
                 audioRecorder = nil
+                
+                // Remove interruption listener
+                NotificationCenter.default.removeObserver(self, name: .AVAudioSessionInterruption, object: nil)
+                
                 result(recordingResult)
             }
         case "pause":
@@ -197,6 +216,36 @@ public class SwiftFlutterAudioRecorderPlugin: NSObject, FlutterPlugin, AVAudioRe
         }
     }
     
+    @objc func handleInterruption(notification: Notification) {
+        guard let userInfo = notification.userInfo,
+            let typeValue = userInfo[AVAudioSessionInterruptionTypeKey] as? UInt,
+            let type = AVAudioSession.InterruptionType(rawValue: typeValue) else {
+                return
+        }
+
+        // Switch over the interruption type.
+        switch type {
+            case .began:
+                // An interruption began. Update the UI as needed.
+                audioStreamHandler.push(data: ["type": "interruptionBegan"])
+                break
+            case .ended:
+               // An interruption ended. Resume playback, if appropriate.
+                guard let optionsValue = userInfo[AVAudioSessionInterruptionOptionKey] as? UInt else { return }
+                let options = AVAudioSession.InterruptionOptions(rawValue: optionsValue)
+                if options.contains(.shouldResume) {
+                    // Interruption ended. Playback should resume.
+                    audioStreamHandler.push(data: ["type": "interruptionEnded", "shouldResume": true])
+                } else {
+                    // Interruption ended. Playback should not resume.
+                    audioStreamHandler.push(data: ["type": "interruptionEnded", "shouldResume": false])
+                }
+                break
+            default:
+                break
+        }
+    }
+    
     // developer.apple.com/documentation/coreaudiotypes/coreaudiotype_constants/1572096-audio_data_format_identifiers
     func getOutputFormatFromString(_ format : String) -> Int {
         switch format {
@@ -207,5 +256,23 @@ public class SwiftFlutterAudioRecorderPlugin: NSObject, FlutterPlugin, AVAudioRe
         default :
             return Int(kAudioFormatMPEG4AAC)
         }
+    }
+}
+
+class AudioStreamHandler: NSObject, FlutterStreamHandler {
+    private var _eventSink: FlutterEventSink?
+
+    func onListen(withArguments arguments: Any?, eventSink events: @escaping FlutterEventSink) -> FlutterError? {
+        _eventSink = events
+        return nil
+    }
+
+    func onCancel(withArguments arguments: Any?) -> FlutterError? {
+        _eventSink = nil
+        return nil
+    }
+    
+    func push(data: [String : Any?]) {
+        _eventSink?(data)
     }
 }
