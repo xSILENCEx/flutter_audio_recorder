@@ -46,7 +46,8 @@ class FlutterAudioRecorder {
           _interruptionStreamController?.add(InterruptionType.endedWithResume);
           break;
         case 'interruptionEndedWithoutResume':
-          _interruptionStreamController?.add(InterruptionType.endedWithNoResume);
+          _interruptionStreamController
+              ?.add(InterruptionType.endedWithNoResume);
           break;
         default:
           return null;
@@ -148,6 +149,18 @@ class FlutterAudioRecorder {
     }
 
     return _recording;
+  }
+
+  Future<File> combineFiles(List<File> files, String outputPath) async {
+    var result = await _channel.invokeMethod('combineFiles', {
+      'files': files.map((e) => e.path).toList(),
+      'outputPath': outputPath,
+    });
+    if (result != null) {
+      return File(result);
+    }
+
+    return null;
   }
 
   /// Ask for current status of recording

@@ -170,6 +170,18 @@ public class SwiftFlutterAudioRecorderPlugin: NSObject, FlutterPlugin, AVAudioRe
             }
             
             result(nil)
+        case "combineFiles":
+            let dic = call.arguments as! [String : Any]
+            let files: [String] = dic["files"] as? [String] ?? []
+            let fileUrls : [URL] = files.map({ URL(fileURLWithPath: $0) })
+            if let outputUrlPath = dic["outputPath"] as? String {
+                let outputUrl = URL(fileURLWithPath: outputUrlPath)
+                mergeAudioFiles(outputUrl: outputUrl, audioFileUrls: fileUrls) { (masterFileUrl, error) in
+                    result(masterFileUrl?.path ?? nil)
+                }
+            }
+            break
+            
         case "hasPermissions":
             print("hasPermissions")
             var permission: AVAudioSession.RecordPermission
@@ -222,23 +234,25 @@ public class SwiftFlutterAudioRecorderPlugin: NSObject, FlutterPlugin, AVAudioRe
             let type = AVAudioSession.InterruptionType(rawValue: typeValue) else {
                 return
         }
-
+        
         // Switch over the interruption type.
         switch type {
             case .began:
+                try? AVAudioSession.sharedInstance().setActive(false)
                 // An interruption began. Update the UI as needed.
                 audioStreamHandler.push(data: ["type": "interruptionBegan"])
                 break
             case .ended:
                // An interruption ended. Resume playback, if appropriate.
+                try? AVAudioSession.sharedInstance().setActive(true)
                 guard let optionsValue = userInfo[AVAudioSessionInterruptionOptionKey] as? UInt else { return }
                 let options = AVAudioSession.InterruptionOptions(rawValue: optionsValue)
                 if options.contains(.shouldResume) {
                     // Interruption ended. Playback should resume.
-                    audioStreamHandler.push(data: ["type": "interruptionEnded", "shouldResume": true])
+                    audioStreamHandler.push(data: ["type": "interruptionEndedWithResume"])
                 } else {
                     // Interruption ended. Playback should not resume.
-                    audioStreamHandler.push(data: ["type": "interruptionEnded", "shouldResume": false])
+                    audioStreamHandler.push(data: ["type": "interruptionEndedWithoutResume"])
                 }
                 break
             default:
@@ -274,5 +288,43 @@ class AudioStreamHandler: NSObject, FlutterStreamHandler {
     
     func push(data: [String : Any?]) {
         _eventSink?(data)
+    }
+}
+
+func mergeAudioFiles(outputUrl: URL, audioFileUrls: [URL], callback: @escaping (_ url: URL?, _ error: Error?)->()) {
+
+    // Create the audio composition
+    let composition = AVMutableComposition()
+    let compositionAudioTrack = composition.addMutableTrack(withMediaType: AVMediaType.audio, preferredTrackID: kCMPersistentTrackID_Invalid)
+    
+    // Merge
+    for url in audioFileUrls {
+        compositionAudioTrack?.append(url: url)
+    }
+
+    // Export it
+    let assetExport = AVAssetExportSession(asset: composition, presetName: AVAssetExportPresetAppleM4A)
+    assetExport?.outputFileType = AVFileType.m4a
+    assetExport?.outputURL = outputUrl
+    assetExport?.exportAsynchronously(completionHandler: {
+        switch assetExport!.status {
+        case AVAssetExportSessionStatus.failed:
+            callback(nil, assetExport?.error)
+            default:
+                callback(assetExport?.outputURL, nil)
+        }
+    })
+}
+
+extension AVMutableCompositionTrack {
+    func append(url: URL) {
+        let newAsset = AVURLAsset(url: url)
+        let range = CMTimeRangeMake(kCMTimeZero, newAsset.duration)
+        let end = timeRange.end
+        print(end)
+        if let track = newAsset.tracks(withMediaType: AVMediaType.audio).first {
+            try! insertTimeRange(range, of: track, at: end)
+        }
+        
     }
 }
